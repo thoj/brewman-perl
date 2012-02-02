@@ -9,7 +9,7 @@ use DBI;
 use Data::Dumper;
 
 my $dbfile = "data_log.db";
-my $owfs = "/home/tj/owfs";
+my $owfs = "/mnt/owfs";
 
 my $sensors = {};
 
@@ -34,12 +34,13 @@ close($dir);
 foreach my $k (keys $sensors) {
 	$sensors->{$k}{sth} = $dbh->prepare("INSERT INTO `$k` (datetime,value) VALUES(DATETIME('now'),?)");
 }
-while (sleep 5) {
+while (sleep 10) {
 	foreach my $k (keys $sensors) {
 		my $fh;
 		open($fh, "$owfs/$k/temperature");
 		my $temp = <$fh>;
 		close($fh);
 		$sensors->{$k}{sth}->execute($temp);
+		$dbh->commit();
 	}
 }
