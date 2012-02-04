@@ -1,90 +1,129 @@
 #/usr/bin/perl
 use strict;
 use warnings;
+use IO::Socket;
+use Time::HiRes qw(sleep);
+use Data::Dumper;
+my $Kp = 6;
+my $Kd = 5;
+my $Ki = 1;
 
+my $deadband    = 5;
 
-my $Kp = 2;
-my $Kd = 4.5;
-my $Ki = 0.1;
-
-my $output = 50;
-my $output_max = 100;
-my $output_min = 0;
-
-my $deadband = 5;
-my $last_output = 50;
-
-my $owfs = "/mnt/owfs";
+my $owfs    = "/mnt/owfs";
 my $sensors = {};
 my $dir;
-opendir($dir, $owfs) || die "No OWFS found!";
-while (my $d = readdir $dir ) {
-	if ($d =~ m/^28\./xmi) {
-		$sensors->{$d} = {};
-	}
+opendir( $dir, $owfs ) || die "No OWFS found!";
+while ( my $d = readdir $dir ) {
+    if ( $d =~ m/^28\./xmi ) {
+        $sensors->{$d} = {};
+    }
 }
 
-my $pv_last = read_pv();
+my $pv = read_pv();
 my $sp = read_sp();
 
-my $pv = 0;
-my $iterm = $pv-$sp;; #feedforward?
+my $pid_par = init_pid( $Kp, $Kd, $Ki, 0, 100, $pv );
+$pid_par->{iterm} = $sp - $pv;    #feedforward
 
-# period is 60 seconds.
 
-while (sleep 6) {
-	$pv = read_pv();	
+print Dumper($pid_par);
 
-	# Calculate integral.
-	my $error = $sp - $pv;
-	$iterm += ($Ki * $error);
-	# Limit integral
-	if ($iterm > $output_max) {$iterm = $output_max; }
-	if ($iterm < $output_min) {$iterm = $output_min; }
-	
-	# Calculate derivative	
-	my $dterm = ($pv - $pv_last);
+while ( sleep 2 ) {
+    $pv = read_pv();
+    $sp = read_sp();
+    my $output = pid( $pid_par, $pv, $sp );
+    if ( $output > 50 && $output - 50 > $deadband ) {
+        up_pulse();
+    }
+    elsif ( $output < 50 && $output - 50 < -$deadband ) {
+        down_pulse();
+    }
+    else {
+        print "Nop.\n";
+    }
 
-	# Calculate output
-	$output = $Kp * $error + $iterm - $Kd * $dterm;
-	
-	# Limit output
-	if ($output > $output_max) {$output = $output_max; }
-	if ($output < $output_min) {$output = $output_min; }
-	
-	printf("%.1f PV: %.1f E: %.1f I: %.1f D: %.1f PV_Last: %.1f?\n", $output, $pv, $error, $iterm, $dterm, $pv_last);
-	
-	$pv_last = $pv;
-	
-	# Here i need to deside if i need to inc my 3 pole controller 
-	# or dec. Not sure of the best way to do this yet.
-	
-	if ($output > 50 && $output - 50 > $deadband) 
-	{
-		#Send increase pulse
-		print "Inc.\n"
-	} elsif ($output < 50 && $output - 50 < -$deadband) {
-		#Send decrease pulse
-		print "Dec.\n";
-	} else {
-		print "Nop.\n";
-	}
-	
+}
+
+sub init_pid {
+    my ( $Kp, $Kd, $Ki, $min, $max, $pv ) = @_;
+    my $par = { kp => $Kp, kd => $Kd, ki => $Ki, max => $max, min => $min };
+    $par->{iterm}  = 0;
+    $par->{lastpv} = $pv;
+    return $par;
+}
+
+sub pid {
+    my ( $par, $pv, $sp ) = @_;
+
+    # Calculate integral.
+    my $error = $sp - $pv;
+    $par->{iterm} += ( $par->{ki} * $error );
+
+    # Limit integral
+    if ( $par->{iterm} > $par->{max} ) { $par->{iterm} = $par->{max}; }
+    if ( $par->{iterm} < $par->{min} ) { $par->{iterm} = $par->{min}; }
+
+    # Calculate derivative
+    my $dterm = $pv - $par->{lastpv};
+
+    # Calculate output
+    my $output = $par->{kp} * $error + $par->{iterm} - $par->{kd} * $dterm;
+
+    # Limit output
+    if ( $output > $par->{max} ) { $output = $par->{max}; }
+    if ( $output < $par->{min} ) { $output = $par->{min}; }
+
+    $par->{lastpv} = $pv;
+
+    printf(
+        "%.1f (PV: %.1f E: %.1f P: %.1f I: %.1f D: %.1f)\n",
+        $output, $pv, $error, $par->{kp} * $error,
+        $par->{iterm}, $dterm
+    );
+
+    return $output;
 }
 
 sub read_sp {
-	return 67;
+    return 67;
 }
 
-sub read_pv
-{
-	my $total = 0;
-	foreach my $k (keys $sensors) {
-		my $fh;
-		open($fh, "$owfs/$k/temperature");
-		my $temp = <$fh>;
-		$total += $temp;
-		close($fh);
-	}
-	return $total / scalar keys $sensors;
+sub read_pv {
+    my $total = 0;
+    foreach my $k ( keys $sensors ) {
+        my $fh;
+        open( $fh, "$owfs/$k/temperature" );
+        my $temp = <$fh>;
+        $total += $temp;
+        close($fh);
+    }
+    return $total / scalar keys $sensors;
 }
+
+sub up_pulse {
+    my $sock = new IO::Socket::INET(
+        PeerAddr => 'localhost',
+        PeerPort => '9999',
+        Proto    => 'tcp',
+    );
+    die "Could not create socket: $!\n" unless $sock;
+    print $sock "~out8=1~";
+    sleep(0.1);
+    print $sock "~out8=0~";
+    close($sock);
+}
+
+sub down_pulse {
+    my $sock = new IO::Socket::INET(
+        PeerAddr => 'localhost',
+        PeerPort => '9999',
+        Proto    => 'tcp',
+    );
+    die "Could not create socket: $!\n" unless $sock;
+    print $sock "~out9=1~";
+    sleep(0.1);
+    print $sock "~out9=0~";
+    close($sock);
+}
+
