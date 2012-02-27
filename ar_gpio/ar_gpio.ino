@@ -94,7 +94,24 @@ void serialEvent() {
     else if (parameter == 0) {
       parameter = inByte;
       if (parameter > 15) {
-        parameter = parameter - 48;
+        switch (parameter) {
+          case '1': parameter = 1; break;
+          case '2': parameter = 2; break;
+          case '3': parameter = 3; break;
+          case '4': parameter = 4; break;
+          case '5': parameter = 5; break;
+          case '6': parameter = 6; break;
+          case '7': parameter = 7; break;
+          case '8': parameter = 8; break;
+          case '9': parameter = 9; break;
+          case 'A': parameter = 10; break;
+          case 'B': parameter = 11; break;
+          case 'C': parameter = 12; break;
+          case 'D': parameter = 13; break;
+          case 'E': parameter = 14; break;
+          case 'F': parameter = 15; break;
+          case 'G': parameter = 16; break;
+        }
       }
     } 
     else if (parameter2 == 0) {
